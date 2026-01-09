@@ -51,10 +51,42 @@ end
 initialparameters(rng::AbstractRNG, bas::SparseACEbasis) = 
          NamedTuple() 
 
-initialstates(rng::AbstractRNG, bas::SparseACEbasis) = 
-         ( aspec = bas.abasis.spec, 
-            aaspecs = bas.aabasis.specs, 
-            A2Bmaps = SparseMatCSX.(bas.A2Bmaps), )
+function initialstates(rng::AbstractRNG, bas::SparseACEbasis)
+   aspec = bas.abasis.spec
+   aaspecs = bas.aabasis.specs
+
+   # Convert tuple specs to separate integer arrays for Reactant compatibility
+   # aspec is Vector{NTuple{2, Int}} - convert to spec_R, spec_Y
+   spec_R = [s[1] for s in aspec]
+   spec_Y = [s[2] for s in aspec]
+
+   # Convert aaspecs to matrix format for Reactant compatibility
+   # Each aaspec[i] is Vector{NTuple{N, Int}} for order N
+   aaspecs_mats = [_aaspec_to_matrix(aa) for aa in aaspecs]
+
+   return ( aspec = aspec,
+            aaspecs = aaspecs,
+            A2Bmaps = SparseMatCSX.(bas.A2Bmaps),
+            # Reactant-compatible integer array format
+            spec_R = spec_R,
+            spec_Y = spec_Y,
+            aaspecs_mats = aaspecs_mats, )
+end
+
+# Helper to convert tuple-based aaspec to matrix format
+function _aaspec_to_matrix(aaspec::Vector{<:Tuple})
+   if isempty(aaspec)
+      return zeros(Int, 0, 0)
+   end
+   order = length(first(aaspec))
+   mat = zeros(Int, length(aaspec), order)
+   for (i, aa) in enumerate(aaspec)
+      for (j, idx) in enumerate(aa)
+         mat[i, j] = idx
+      end
+   end
+   return mat
+end
 
 
 # ----------------------------------------

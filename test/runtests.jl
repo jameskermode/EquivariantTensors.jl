@@ -43,8 +43,12 @@ end
     # @testset "ACE KA new version" begin include("acemodels/test_ace_ka2.jl"); end
 end 
 
-@testset "Atoms" begin 
+@testset "Atoms" begin
     @testset "NeighbourListsExt" begin include("atoms/test_neighbourlistsext.jl"); end
-end 
+end
+
+@testset "Reactant Compatibility" begin
+    include("test_reactant_compat.jl")
+end
 
 end

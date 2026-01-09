@@ -20,8 +20,11 @@ const NTorDP = Union{NamedTuple, XState}
 
 using ForwardDiff: Dual, extract_derivative 
 
-export O3, gpu_device, cpu_device  
+export O3, gpu_device, cpu_device
 
+# Reactant compatibility: stub for detection function
+# This is overridden by ReactantExt when Reactant.jl is loaded
+_is_reactant_traced(::Any) = false
 
 include("generics.jl")
 

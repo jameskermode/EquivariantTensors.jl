@@ -1,23 +1,136 @@
 #
-# KernelAbstractions evaluation of a sparse ACE model 
-# 
+# KernelAbstractions evaluation of a sparse ACE model
+#
 
-using LinearAlgebra: transpose 
-import ChainRulesCore: rrule 
+using LinearAlgebra: transpose
+import ChainRulesCore: rrule
 
-# NOTES: 
-#  - Rnl and Ylm must be 3-dimensional arrays; cf. SparseProdPool for 
-#    the format. 
-#  - this kernel is inconsistent with the agreed-format for the 𝔹 basis 
-#    which is supposed to be returned as a tuple. But for initial testing,  
-#    this is ok. 
+# NOTES:
+#  - Rnl and Ylm must be 3-dimensional arrays; cf. SparseProdPool for
+#    the format.
+#  - this kernel is inconsistent with the agreed-format for the 𝔹 basis
+#    which is supposed to be returned as a tuple. But for initial testing,
+#    this is ok.
 
 function ka_evaluate(tensor::SparseACEbasis, Rnl_3, Ylm_3, ps, st)
-   # out = _ka_evaluate(tensor, Rnl_3, Ylm_3, 
-   #                        st.aspec, st.aaspecs, st.A2Bmaps)
-   𝔹, A, 𝔸 = _ka_evaluate(tensor, Rnl_3, Ylm_3, 
+   # Check for Reactant TracedRArrays - route to pure Julia path
+   if _is_reactant_traced(Rnl_3) || _is_reactant_traced(Ylm_3)
+      return _reactant_evaluate(tensor, Rnl_3, Ylm_3, ps, st)
+   end
+
+   𝔹, A, 𝔸 = _ka_evaluate(tensor, Rnl_3, Ylm_3,
                           st.aspec, st.aaspecs, st.A2Bmaps)
-   return 𝔹, st 
+   return 𝔹, st
+end
+
+# ========================================================================
+# Reactant-compatible pure Julia evaluation path
+# Uses integer spec arrays instead of Vector{Tuple}
+# ========================================================================
+
+function _reactant_evaluate(tensor::SparseACEbasis, Rnl_3, Ylm_3, ps, st)
+   # Use integer spec arrays from state
+   spec_R = st.spec_R
+   spec_Y = st.spec_Y
+   aaspecs_mats = st.aaspecs_mats
+   A2Bmaps = st.A2Bmaps
+
+   # Step 1: Pooled sparse product using integer arrays
+   # A = (nnodes, nA)
+   A = _reactant_pooled_sparse_product(Rnl_3, Ylm_3, spec_R, spec_Y)
+
+   # Step 2: Sparse symmetric product for each order
+   # AA = (nnodes, nAA)
+   AA = _reactant_sparse_symm_prod(A, aaspecs_mats)
+
+   # Step 3: Apply A2Bmaps (coupling coefficients)
+   # 𝔹 = tuple of (nnodes, nB) matrices
+   𝔹 = permutedims.( mul.(A2Bmaps, Ref(transpose(AA))) )
+
+   return 𝔹, st
+end
+
+"""
+Reactant-compatible pooled sparse product (NB=2 case).
+Uses integer arrays spec_R, spec_Y instead of Vector{Tuple}.
+
+Note: spec_R/spec_Y are typed as AbstractVector (not AbstractVector{<:Integer})
+to support TracedRArray{Int64} which has element type TracedRNumber{Int64},
+not Int64 itself.
+"""
+function _reactant_pooled_sparse_product(Rnl_3::AbstractArray{T,3},
+                                          Ylm_3::AbstractArray{T,3},
+                                          spec_R::AbstractVector,
+                                          spec_Y::AbstractVector) where {T}
+   maxneigs, nnodes, _ = size(Rnl_3)
+   nA = length(spec_R)
+
+   # Vectorized gather: (maxneigs, nnodes, nA)
+   Rnl_gathered = Rnl_3[:, :, spec_R]
+   Ylm_gathered = Ylm_3[:, :, spec_Y]
+
+   # Element-wise product
+   prod_RY = Rnl_gathered .* Ylm_gathered
+
+   # Sum over neighbors: (maxneigs, nnodes, nA) -> (nnodes, nA)
+   A = dropdims(sum(prod_RY, dims=1), dims=1)
+
+   return A
+end
+
+"""
+Reactant-compatible sparse symmetric product.
+Handles multi-order products using matrix-format specs.
+"""
+function _reactant_sparse_symm_prod(A::AbstractMatrix{T},
+                                     aaspecs_mats::Vector) where {T}
+   nnodes = size(A, 1)
+
+   # Compute AA for each order
+   AA_parts = Vector{AbstractMatrix{T}}()
+
+   for aaspec_mat in aaspecs_mats
+      if size(aaspec_mat, 1) == 0
+         continue
+      end
+      AA_part = _reactant_symm_prod_single(A, aaspec_mat)
+      push!(AA_parts, AA_part)
+   end
+
+   # Concatenate all orders
+   if isempty(AA_parts)
+      return zeros(T, nnodes, 0)
+   else
+      return hcat(AA_parts...)
+   end
+end
+
+"""
+Single-order symmetric product using matrix-format spec.
+aaspec_mat is (nAA, order) matrix of A indices.
+
+Note: aaspec_mat typed as AbstractMatrix (not AbstractMatrix{<:Integer})
+to support TracedRArray which has TracedRNumber element type.
+"""
+function _reactant_symm_prod_single(A::AbstractMatrix{T},
+                                     aaspec_mat::AbstractMatrix) where {T}
+   nAA, order = size(aaspec_mat)
+   nnodes = size(A, 1)
+
+   if order == 0
+      # Constant (order-0): just ones
+      return ones(T, nnodes, nAA)
+   elseif order == 1
+      # Linear: just gather from A
+      return A[:, aaspec_mat[:, 1]]
+   else
+      # Higher order: product of gathered terms
+      AA = ones(T, nnodes, nAA)
+      for k in 1:order
+         AA .*= A[:, aaspec_mat[:, k]]
+      end
+      return AA
+   end
 end                           
 
 function _ka_evaluate(tensor::SparseACEbasis, Rnl_3, Ylm_3, 
