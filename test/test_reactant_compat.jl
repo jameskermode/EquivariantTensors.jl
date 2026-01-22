@@ -94,6 +94,46 @@ end
         @test size(BB_ka[1], 1) == nnodes
     end
 
+    @testset "reshape_embedding dispatch" begin
+        # Test that regular arrays use KA path (no error when Reactant not loaded)
+        nnodes, nedges, nfeat = 4, 10, 5
+        maxneigs = 4
+
+        # Create a mock ETGraph
+        ii = [1, 1, 1, 2, 2, 2, 3, 3, 4, 4]  # sorted by node
+        jj = [2, 3, 4, 1, 3, 4, 1, 2, 1, 2]
+        G = ET.ETGraph(ii, jj)
+
+        # Test reshape_embedding with regular arrays
+        P2 = randn(nedges, nfeat)
+        P3 = ET.reshape_embedding(P2, G)
+        @test size(P3) == (ET.maxneigs(G), nnodes, nfeat)
+
+        # Test rev_reshape_embedding
+        P2_back = ET.rev_reshape_embedding(P3, G)
+        @test size(P2_back) == (nedges, nfeat)
+        @test P2 ≈ P2_back
+    end
+
+    @testset "SelectLinL dispatch" begin
+        # Test that regular arrays use KA path
+        in_dim, out_dim, ncat = 5, 3, 2
+        rng = MersenneTwister(43)
+
+        selector = x -> x  # Identity for integer inputs
+        linl = ET.SelectLinL(in_dim, out_dim, ncat, selector)
+        ps_linl = ET.LuxCore.initialparameters(rng, linl)
+        st_linl = ET.LuxCore.initialstates(rng, linl)
+
+        # Test with integer species indices
+        nbatch = 10
+        P = randn(nbatch, in_dim)
+        X = rand(1:ncat, nbatch)  # Species indices
+
+        B, _ = linl((P, X), ps_linl, st_linl)
+        @test size(B) == (nbatch, out_dim)
+    end
+
     # Tests that require Reactant
     if REACTANT_AVAILABLE
         @testset "ReactantExt extension" begin
@@ -136,6 +176,61 @@ end
             E_j = test_energy(Rnl_3, Ylm_3, st.spec_R, st.spec_Y)
 
             @test abs(E_j - Float64(E_c)) < 1e-4
+        end
+
+        @testset "reshape_embedding with Reactant arrays" begin
+            Reactant.set_default_backend("cpu")
+
+            nnodes, nedges, nfeat = 4, 10, 5
+
+            # Create a mock ETGraph
+            ii = [1, 1, 1, 2, 2, 2, 3, 3, 4, 4]
+            jj = [2, 3, 4, 1, 3, 4, 1, 2, 1, 2]
+            G = ET.ETGraph(ii, jj)
+
+            # Test with regular arrays first
+            P2 = randn(Float32, nedges, nfeat)
+            P3_ref = ET.reshape_embedding(P2, G)
+
+            # Test with ConcreteRArray (should use Reactant path)
+            P2_ra = Reactant.to_rarray(P2)
+            P3_ra = ET.reshape_embedding(P2_ra, G)
+            @test size(P3_ra) == size(P3_ref)
+            @test maximum(abs.(Array(P3_ra) .- P3_ref)) < 1e-6
+
+            # Test rev_reshape_embedding
+            P2_back_ra = ET.rev_reshape_embedding(P3_ra, G)
+            @test size(P2_back_ra) == size(P2)
+            @test maximum(abs.(Array(P2_back_ra) .- P2)) < 1e-6
+        end
+
+        @testset "SelectLinL with Reactant arrays" begin
+            Reactant.set_default_backend("cpu")
+
+            in_dim, out_dim, ncat = 5, 3, 2
+            rng = MersenneTwister(44)
+
+            selector = x -> x  # Identity for integer inputs
+            linl = ET.SelectLinL(in_dim, out_dim, ncat, selector)
+            ps_linl = ET.LuxCore.initialparameters(rng, linl)
+            st_linl = ET.LuxCore.initialstates(rng, linl)
+
+            nbatch = 10
+            P = randn(Float32, nbatch, in_dim)
+            X = rand(1:ncat, nbatch)
+
+            # Reference with regular arrays
+            B_ref, _ = linl((P, X), ps_linl, st_linl)
+
+            # Test with Reactant arrays
+            P_ra = Reactant.to_rarray(P)
+            X_ra = Reactant.to_rarray(Int64.(X))
+            W_ra = Reactant.to_rarray(Float32.(ps_linl.W))
+
+            # Direct call to Reactant path
+            B_ra = ET._reactant_apply_selectlinl(linl, P_ra, X_ra, W_ra)
+            @test size(B_ra) == size(B_ref)
+            @test maximum(abs.(Array(B_ra) .- Float32.(B_ref))) < 1e-5
         end
     else
         @info "Reactant not available, skipping Reactant-specific tests"

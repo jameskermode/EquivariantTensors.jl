@@ -39,18 +39,32 @@ end
 
 
 function _apply_selectlinl(l, P, X::AbstractArray, W)
+   # Dispatch to Reactant-compatible path if tracing
+   if _is_reactant_traced(P) || _is_reactant_traced(X)
+      return _reactant_apply_selectlinl(l, P, X, W)
+   end
+   return _ka_apply_selectlinl(l, P, X, W)
+end
+
+# Pure Julia fallback for Reactant (overridden in ReactantExt)
+function _reactant_apply_selectlinl(l, P, X, W)
+   error("Reactant.jl must be loaded for Reactant-compatible SelectLinL")
+end
+
+# KernelAbstractions implementation
+function _ka_apply_selectlinl(l, P, X::AbstractArray, W)
    TB = promote_type(eltype(P), eltype(W))
    B = similar(P, TB, size(P, 1), l.out_dim)
-   
+
    # Morally this should work, but it doesn't like the views it seems?!
-   #       so we need write a kernel for it; fairly straightforward for this 
-   #       case but unfortuntately doesn't leverage BLAS 
+   #       so we need write a kernel for it; fairly straightforward for this
+   #       case but unfortuntately doesn't leverage BLAS
    # B = reduce(vcat, transpose( (@view ps.W[:, :, l.selector(x)]) * P[i, :])
    #                  for (i, x) in enumerate(X) )
 
    # TODO: there was a problem applying the selector when it was type unstable
    # now that this is fixed, maybe try to go back to the above implementation?
-   # that way we don't have to write a custom rrule. 
+   # that way we don't have to write a custom rrule.
 
    kernel! = _ka_apply_selectlinl!(KernelAbstractions.get_backend(X))
    kernel!(B, P, X, W, l.selector; ndrange = size(B))

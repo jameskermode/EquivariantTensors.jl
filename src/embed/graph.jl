@@ -78,64 +78,93 @@ __zero(x) = zero(x)
 __zero(TX::Type{<: NamedTuple}) = DiffNT.__zero(TX)
 
 """
-   reshape_embedding(P, ii, jj, nnodes, maxneigs)
+   reshape_embedding(P, X::ETGraph)
 
-Takes a Nedges x Nfeat matrix and writes it into a 3-dimensional array of 
-size (maxneigs, nnodes, Nfeat) where each column corresponds to a node. 
+Takes a Nedges x Nfeat matrix and writes it into a 3-dimensional array of
+size (maxneigs, nnodes, Nfeat) where each column corresponds to a node.
 The "missing" neighbours are filled with zeros.
+
+When P is a Reactant TracedRArray, dispatches to pure Julia implementation.
+Otherwise uses KernelAbstractions for GPU compatibility.
 """
 function reshape_embedding(P, X::ETGraph)
-   @kernel function _reshape_embedding!(P3, @Const(P), @Const(first))
+   if _is_reactant_traced(P)
+      return _reactant_reshape_embedding(P, X)
+   end
+   return _ka_reshape_embedding(P, X)
+end
+
+# Pure Julia fallback for Reactant (overridden in ReactantExt)
+function _reactant_reshape_embedding(P, X::ETGraph)
+   error("Reactant.jl must be loaded for Reactant-compatible reshape_embedding")
+end
+
+# KernelAbstractions implementation
+function _ka_reshape_embedding(P, X::ETGraph)
+   @kernel function _reshape_embedding_kernel!(P3, @Const(P), @Const(first))
       inode, ifeat = @index(Global, NTuple)
-      i1 = first[inode]  
+      i1 = first[inode]
       i2 = first[inode + 1] - 1
       for t = 1:(i2-i1+1)
          iedge = i1 + t - 1  # edge index
          @inbounds P3[t, inode, ifeat] = P[iedge, ifeat]
       end
-      nothing 
+      nothing
    end
 
-
-   
-   # size(P) == #edges x # features 
+   # size(P) == #edges x # features
    nedges, nfeatures = size(P)
    P3 = similar(P, (maxneigs(X), nnodes(X), nfeatures))
-   fill!(P3, __zero(eltype(P3)))    # TODO : nasty hack, another reason to switch to DecoratedParticles 
+   fill!(P3, __zero(eltype(P3)))    # TODO : nasty hack, another reason to switch to DecoratedParticles
    backend = KernelAbstractions.get_backend(P3)
-   kernel! = _reshape_embedding!(backend)
+   kernel! = _reshape_embedding_kernel!(backend)
    kernel!(P3, P, X.first; ndrange = (nnodes(X), nfeatures))
    KernelAbstractions.synchronize(backend)
    return P3
 end
 
 """
-   rev_reshape_embedding(P3, ii, jj, nnodes, maxneigs) -> P
+   rev_reshape_embedding(P3, X::ETGraph) -> P
 
-Reverse operation for `reshape_embedding`. P3 is of shape 
-(maxneigs, nnodes, nfeatures), and this gets written into P which is 
-of shape (nedges, nfeatures) and then returned. 
+Reverse operation for `reshape_embedding`. P3 is of shape
+(maxneigs, nnodes, nfeatures), and this gets written into P which is
+of shape (nedges, nfeatures) and then returned.
+
+When P3 is a Reactant TracedRArray, dispatches to pure Julia implementation.
 """
 function rev_reshape_embedding(P3, X::ETGraph)
-   @kernel function _rev_reshape_embedding!(P, @Const(P3), @Const(first))
+   if _is_reactant_traced(P3)
+      return _reactant_rev_reshape_embedding(P3, X)
+   end
+   return _ka_rev_reshape_embedding(P3, X)
+end
+
+# Pure Julia fallback for Reactant (overridden in ReactantExt)
+function _reactant_rev_reshape_embedding(P3, X::ETGraph)
+   error("Reactant.jl must be loaded for Reactant-compatible rev_reshape_embedding")
+end
+
+# KernelAbstractions implementation
+function _ka_rev_reshape_embedding(P3, X::ETGraph)
+   @kernel function _rev_reshape_embedding_kernel!(P, @Const(P3), @Const(first))
       inode, ifeat = @index(Global, NTuple)
-      i1 = first[inode]  
+      i1 = first[inode]
       i2 = first[inode + 1] - 1
       for t = 1:(i2-i1+1)
          iedge = i1 + t - 1  # edge index
          @inbounds P[iedge, ifeat] = P3[t, inode, ifeat]
       end
-      nothing 
+      nothing
    end
-   
-   # size(P3) == maxneigs x #nodes x #features 
-   nedg = nedges(X) 
-   nfeatures = size(P3, 3) 
+
+   # size(P3) == maxneigs x #nodes x #features
+   nedg = nedges(X)
+   nfeatures = size(P3, 3)
    P = similar(P3, (nedg, nfeatures))
    fill!(P, zero(eltype(P3)))
 
    backend = KernelAbstractions.get_backend(P)
-   kernel! = _rev_reshape_embedding!(backend)
+   kernel! = _rev_reshape_embedding_kernel!(backend)
    kernel!(P, P3, X.first; ndrange = (nnodes(X), nfeatures))
    KernelAbstractions.synchronize(backend)
    return P

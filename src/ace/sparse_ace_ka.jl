@@ -33,7 +33,8 @@ function _reactant_evaluate(tensor::SparseACEbasis, Rnl_3, Ylm_3, ps, st)
    spec_R = st.spec_R
    spec_Y = st.spec_Y
    aaspecs_mats = st.aaspecs_mats
-   A2Bmaps = st.A2Bmaps
+   # Use dense A2Bmaps for Reactant (sparse versions use KA kernels which don't trace)
+   A2Bmaps_dense = st.A2Bmaps_dense
 
    # Step 1: Pooled sparse product using integer arrays
    # A = (nnodes, nA)
@@ -43,9 +44,11 @@ function _reactant_evaluate(tensor::SparseACEbasis, Rnl_3, Ylm_3, ps, st)
    # AA = (nnodes, nAA)
    AA = _reactant_sparse_symm_prod(A, aaspecs_mats)
 
-   # Step 3: Apply A2Bmaps (coupling coefficients)
+   # Step 3: Apply A2Bmaps (coupling coefficients) using dense matrices
    # 𝔹 = tuple of (nnodes, nB) matrices
-   𝔹 = permutedims.( mul.(A2Bmaps, Ref(transpose(AA))) )
+   # Use standard matrix multiplication: AA @ A2Bmap' = (nnodes, nAA) @ (nAA, nB) = (nnodes, nB)
+   # Each A2Bmap is (nB, nAA), so we compute AA * A2Bmap'
+   𝔹 = Tuple(AA * A2Bmap' for A2Bmap in A2Bmaps_dense)
 
    return 𝔹, st
 end
@@ -86,20 +89,25 @@ function _reactant_sparse_symm_prod(A::AbstractMatrix{T},
                                      aaspecs_mats::Vector) where {T}
    nnodes = size(A, 1)
 
+   # Get concrete type for array allocation
+   # For traced types like TracedRNumber{Float32}, get Float32
+   # isbitstype check: concrete types like Float32 are bits types
+   T_concrete = isbitstype(T) ? T : eltype(T)
+
    # Compute AA for each order
-   AA_parts = Vector{AbstractMatrix{T}}()
+   AA_parts = Vector{AbstractMatrix}()
 
    for aaspec_mat in aaspecs_mats
       if size(aaspec_mat, 1) == 0
          continue
       end
-      AA_part = _reactant_symm_prod_single(A, aaspec_mat)
+      AA_part = _reactant_symm_prod_single(A, aaspec_mat, T_concrete)
       push!(AA_parts, AA_part)
    end
 
    # Concatenate all orders
    if isempty(AA_parts)
-      return zeros(T, nnodes, 0)
+      return zeros(T_concrete, nnodes, 0)
    else
       return hcat(AA_parts...)
    end
@@ -113,21 +121,23 @@ Note: aaspec_mat typed as AbstractMatrix (not AbstractMatrix{<:Integer})
 to support TracedRArray which has TracedRNumber element type.
 """
 function _reactant_symm_prod_single(A::AbstractMatrix{T},
-                                     aaspec_mat::AbstractMatrix) where {T}
+                                     aaspec_mat::AbstractMatrix,
+                                     T_concrete::Type=T) where {T}
    nAA, order = size(aaspec_mat)
    nnodes = size(A, 1)
 
    if order == 0
-      # Constant (order-0): just ones
-      return ones(T, nnodes, nAA)
+      # Constant (order-0): just ones - use concrete type
+      return ones(T_concrete, nnodes, nAA)
    elseif order == 1
       # Linear: just gather from A
       return A[:, aaspec_mat[:, 1]]
    else
       # Higher order: product of gathered terms
-      AA = ones(T, nnodes, nAA)
-      for k in 1:order
-         AA .*= A[:, aaspec_mat[:, k]]
+      # Start with first term (avoids needing ones())
+      AA = A[:, aaspec_mat[:, 1]]
+      for k in 2:order
+         AA = AA .* A[:, aaspec_mat[:, k]]
       end
       return AA
    end

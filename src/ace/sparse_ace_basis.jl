@@ -64,13 +64,18 @@ function initialstates(rng::AbstractRNG, bas::SparseACEbasis)
    # Each aaspec[i] is Vector{NTuple{N, Int}} for order N
    aaspecs_mats = [_aaspec_to_matrix(aa) for aa in aaspecs]
 
+   # Dense versions of A2Bmaps for Reactant tracing (KA kernels don't work with Reactant)
+   # Convert SparseMatrixCSC to dense Matrix
+   A2Bmaps_dense = [Matrix(A) for A in bas.A2Bmaps]
+
    return ( aspec = aspec,
             aaspecs = aaspecs,
             A2Bmaps = SparseMatCSX.(bas.A2Bmaps),
-            # Reactant-compatible integer array format
+            # Reactant-compatible formats
             spec_R = spec_R,
             spec_Y = spec_Y,
-            aaspecs_mats = aaspecs_mats, )
+            aaspecs_mats = aaspecs_mats,
+            A2Bmaps_dense = A2Bmaps_dense, )
 end
 
 # Helper to convert tuple-based aaspec to matrix format
