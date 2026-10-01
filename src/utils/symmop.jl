@@ -18,6 +18,9 @@ scalar, L = 1 for a vector, and so forth.
 The output is given in terms of a sparse matrix `𝔸2𝔹` in CCS format and a 
 specification of the `𝔸` basis as a `Vector{Vector{NLM}}` where 
 `NLM = @NamedTuple{n::Int, l::Int, m::Int}`. 
+
+The remaining `kwargs...` (`PI`, `basis`, `nullspace_solver`, ...) are passed 
+to `O3.coupling_coeffs`.
 """
 function symmetrisation_matrix(L::Integer, mb_spec; 
                                prune = false, kwargs...)

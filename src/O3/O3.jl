@@ -331,11 +331,23 @@ choice is `real`, which is compatible with the `SpheriCart.jl` convention.
 `:sym` and `:asym`, which indicate reflection symmetry and anti-symmetry, resp.
 default is `nothing`, which will later be assigned as `sym` for even `L` and 
 `asym` for odd `L`.  
+- `nullspace_solver`: the LU factorisation behind the null space of the last 
+block in the PI solver. `:sparse` (default, the original behaviour) uses 
+SparseArrays' `lu`, i.e. UMFPACK; `:dense` uses LinearAlgebra's (LAPACK) `lu` 
+on the dense block, with UMFPACK's default row scaling. Both span the same 
+coupled space; individual basis functions can differ by a sign, and within a 
+degenerate `(nn, ll)` block by an orthogonal rotation. `:dense` never calls 
+UMFPACK (a GPL-2.0+ component of SuiteSparse), so a redistributed build that 
+uses it need not ship UMFPACK.
 """
 function coupling_coeffs(L::Integer, ll, nn = nothing; 
                          PI = !(isnothing(nn)), 
                          basis = complex,
-                         refl_sym::Union{Symbol,Nothing} = nothing)
+                         refl_sym::Union{Symbol,Nothing} = nothing, 
+                         nullspace_solver::Symbol = :sparse)
+
+    nullspace_solver in (:sparse, :dense) || 
+        error("coupling_coeffs: unknown nullspace_solver = $(repr(nullspace_solver)); use :sparse or :dense")
 
     # convert L into the format required internally 
     _L = Int(L) 
@@ -368,7 +380,8 @@ function coupling_coeffs(L::Integer, ll, nn = nothing;
         end
     end 
     
-    return _coupling_coeffs(_L, _ll, _nn; PI = PI, basis = basis, refl_sym = refl_sym)
+    return _coupling_coeffs(_L, _ll, _nn; PI = PI, basis = basis, refl_sym = refl_sym, 
+                            nullspace_solver = nullspace_solver)
 end
 
 function _sort(x::SVector{N,T}, permutable_blocks::PermutableBlocks) where {N,T}
@@ -387,7 +400,8 @@ end
 # Function that generates the coupling coefficient of the RE basis (PI = false) 
 # or RPE basis (PI = true) given `nn` and `ll`. 
 function _coupling_coeffs(L::Int, ll::SVector{N, Int}, nn::SVector{N, Int}; 
-                          PI = true, basis = complex, refl_sym::Union{Symbol,Nothing} = nothing) where N
+                          PI = true, basis = complex, refl_sym::Union{Symbol,Nothing} = nothing, 
+                          nullspace_solver::Symbol = :sparse) where N
     refl_sym === nothing && (refl_sym = iseven(L) ? :sym : :asym)
     if refl_sym == :sym
         ll_filter = iseven
@@ -453,13 +467,14 @@ function _coupling_coeffs(L::Int, ll::SVector{N, Int}, nn::SVector{N, Int};
             # # return the RE-PI coupling coeffs
             # return Diagonal(sqrt.(S[1:rk])) * U[:, 1:rk]' * FMatrix, 
             #     [ mm[inv_perm] for mm in MM_reduced ]
-            C, MM = coupling_coeffs_new(L, ll, nn)
+            C, MM = coupling_coeffs_new(L, ll, nn; nullspace_solver = nullspace_solver)
             return C, [ mm[inv_perm] for mm in MM ]
         end
     elseif basis === real 
         if !PI
             MM_r = mm_generate(L, ll, nn; basis=basis) # all admissible mm's
-            Ure_c, MM_c = _coupling_coeffs(L, ll, nn; PI = false, basis=complex, refl_sym = refl_sym)
+            Ure_c, MM_c = _coupling_coeffs(L, ll, nn; PI = false, basis=complex, refl_sym = refl_sym, 
+                                           nullspace_solver = nullspace_solver)
             C_r2c = rAA2cAA(SVector{N, Int}.(MM_c),MM_r) 
             # TODO: coupling_coeffs and mm_generate return different 
             #       format of MM's which may need to be fixed
@@ -474,7 +489,8 @@ function _coupling_coeffs(L::Int, ll::SVector{N, Int}, nn::SVector{N, Int};
         else
             # S = Sn(nn,ll)
             MM_r = mm_generate(L, ll, nn; basis=basis, PI = true) # all admissible mm's wrt ordered cSH mm's
-            Urpe_c, MM_c = _coupling_coeffs(L, ll, nn, PI = PI, basis=complex, refl_sym = refl_sym) # cSH-based couplings
+            Urpe_c, MM_c = _coupling_coeffs(L, ll, nn, PI = PI, basis=complex, refl_sym = refl_sym, 
+                                            nullspace_solver = nullspace_solver) # cSH-based couplings
             C_r2c, MM_reduced = rAA2cAA_PI(SVector{N, Int}.(MM_c),SVector{N, Int}.(MM_r),ll,nn) # r2c map and the ordered mm set
             # TODO: coupling_coeffs and mm_generate return different 
             #       format of MM's which may need to be fixed
@@ -790,7 +806,26 @@ function nullspace_upper_sparse(U::AbstractMatrix{T}) where T<:Number
     return N ./ norm(N)
 end
 
-function solver_inner(M::AbstractMatrix{T}, mmset::Vector{SVector{N,Int}}, μμset::Vector{SVector{N,Int}}) where {N,T<:Number}
+# (L', p, Rs) of an LU factorisation (Rs .* A)[p, q] = L * U, with L' sparse:
+# what the kernel of the last block in `solver_inner` needs (U and q are unused).
+function _lu_Lt_p_Rs(A::AbstractMatrix, nullspace_solver::Symbol)
+    if nullspace_solver === :sparse
+        F = lu(A)                                         # SparseArrays -> UMFPACK
+        return sparse(F.L'), F.p, F.Rs
+    elseif nullspace_solver === :dense
+        Ad = Matrix(A)
+        # UMFPACK's default (SUM) row scaling, rows of zeros left unscaled; it
+        # keeps the dense pivoting close to UMFPACK's
+        rs = vec(sum(abs, Ad; dims = 2))
+        Rs = [r == 0 ? one(r) : inv(r) for r in rs]
+        F = lu(Rs .* Ad; check = false)                   # LAPACK, partial pivoting
+        return sparse(F.L'), F.p, Rs
+    end
+    error("unknown nullspace_solver = $(repr(nullspace_solver)); use :sparse or :dense")
+end
+
+function solver_inner(M::AbstractMatrix{T}, mmset::Vector{SVector{N,Int}}, μμset::Vector{SVector{N,Int}}; 
+                      nullspace_solver::Symbol = :sparse) where {N,T<:Number}
     M = sparse(M')
     C = zeros(Float64, size(M, 2) - size(M, 1), size(M, 2))
 
@@ -810,10 +845,10 @@ function solver_inner(M::AbstractMatrix{T}, mmset::Vector{SVector{N,Int}}, μμs
     # Solving for the last block, cf Fig 1 (b,c)
     if length(row_range) == length(column_range)
         B = M[row_block, prev_col_block]
-        F = lu(B')
-        invp = invperm(F.p)
-        sparse_ns = nullspace_upper_sparse(sparse(F.L'))
-        C[:, prev_col_block] .= (Diagonal(F.Rs) * sparse_ns[invp, :])'
+        Lt, p, Rs = _lu_Lt_p_Rs(B', nullspace_solver)
+        invp = invperm(p)
+        sparse_ns = nullspace_upper_sparse(Lt)
+        C[:, prev_col_block] .= (Diagonal(Rs) * sparse_ns[invp, :])'
         t_start = length(row_range)-2
     else
         for (i, col_idx) in enumerate(prev_col_block)
@@ -863,7 +898,8 @@ function solver_inner(M::AbstractMatrix{T}, mmset::Vector{SVector{N,Int}}, μμs
 end
 
 # Core function that generates the L-equivariant CCs for ordered (nn,ll)
-function coupling_coeffs_new(K::Int, ll::SVector{N,Int}, nn::SVector{N,Int}) where N
+function coupling_coeffs_new(K::Int, ll::SVector{N,Int}, nn::SVector{N,Int}; 
+                             nullspace_solver::Symbol = :sparse) where N
     # TODO: notation inconsistency: K and L both represent the order of equivariance
     # TODO: reconsider if ll and nn here should be made to be SVector{N, Int}
     T = K == 0 ? Float64 : SVector{2K+1,Float64}
@@ -901,7 +937,7 @@ function coupling_coeffs_new(K::Int, ll::SVector{N,Int}, nn::SVector{N,Int}) whe
     # C = Matrix((F.Rs .* sparse_ns[invp,:])')
 
     # method IV: the new solver fully corresponds to the paper - back-substitution!
-    C = solver_inner(M, mmset, μμset)
+    C = solver_inner(M, mmset, μμset; nullspace_solver = nullspace_solver)
     
     if K == 0
         return C, μμset
