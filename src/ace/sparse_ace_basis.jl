@@ -1,5 +1,5 @@
 
-using SparseArrays: SparseMatrixCSC, nzrange, rowvals, nonzeros
+using SparseArrays: SparseMatrixCSC, rowvals, nonzeros
 using LinearAlgebra: mul!
 import ChainRulesCore: NoTangent, rrule, ZeroTangent
 import LuxCore: AbstractLuxLayer, initialparameters, initialstates, apply 
@@ -230,19 +230,12 @@ function pushforward_rows!(B::AbstractVector, ∂B::AbstractMatrix,
                            Rnl::AbstractMatrix, Ylm::AbstractMatrix, 
                            ∂Rnl::AbstractMatrix, ∂Ylm::AbstractMatrix)
    @assert length(tensor.A2Bmaps) == 1 "pushforward_rows! supports a single (L = 0) output"
-   A2Bmap = tensor.A2Bmaps[1]
    nX = size(Rnl, 1)
-   TA = promote_type(eltype(Rnl), eltype(Ylm))
-   T∂A = _rows_tangent_type(TA, (∂Rnl, ∂Ylm))
-   @no_escape begin 
-      A = @alloc(TA, length(tensor.abasis))
-      ∂A = @alloc(T∂A, nX, length(tensor.abasis))
-      pushforward_rows!(A, ∂A, tensor.abasis, (Rnl, Ylm), (∂Rnl, ∂Ylm))
-      AA = @alloc(TA, length(tensor.aabasis))
-      ∂AA = @alloc(T∂A, nX, length(tensor.aabasis))
-      pushforward_rows!(AA, ∂AA, tensor.aabasis, A, ∂A)
-      _pushforward_rows_A2B!(B, ∂B, A2Bmap, AA, ∂AA)
-   end 
+   # one node of the batched _jacobian_X! 
+   _node3(X) = reshape(X, nX, 1, size(X, 2))
+   _jacobian_X!(reshape(B, 1, :), _node3(∂B), tensor, 
+                _node3(Rnl), _node3(Ylm), _node3(∂Rnl), _node3(∂Ylm), 
+                tensor.abasis.spec, tensor.aabasis.specs, tensor.A2Bmaps[1])
    return B, ∂B
 end
 
@@ -251,47 +244,6 @@ function pushforward_rows(tensor::SparseACEbasis, Rnl, Ylm, ∂Rnl, ∂Ylm)
    B = zeros(alc_B...)
    ∂B = zeros(alc_∂B...)
    return pushforward_rows!(B, ∂B, tensor, Rnl, Ylm, ∂Rnl, ∂Ylm)
-end
-
-# B = A2B * AA;  ∂B[j, k] = ∑_iAA A2B[k, iAA] ∂AA[j, iAA]
-function _pushforward_rows_A2B!(B::AbstractVector, ∂B::AbstractMatrix, 
-                                A2B::SparseMatrixCSC, 
-                                AA::AbstractVector, ∂AA::AbstractMatrix)
-   nX = size(∂AA, 1)
-   @assert size(A2B, 2) == length(AA) == size(∂AA, 2)
-   @assert length(B) == size(A2B, 1) && size(∂B) == (nX, size(A2B, 1))
-   fill!(B, zero(eltype(B)))
-   fill!(∂B, zero(eltype(∂B)))
-   rv = rowvals(A2B); nz = nonzeros(A2B)
-   @inbounds for iAA = 1:size(A2B, 2)
-      aa = AA[iAA]
-      for p in nzrange(A2B, iAA)
-         k = rv[p]; c = nz[p]
-         B[k] += c * aa
-         @simd ivdep for j = 1:nX
-            ∂B[j, k] += c * ∂AA[j, iAA]
-         end
-      end
-   end
-   return B, ∂B
-end
-
-# generic fallback for a dense (or otherwise non-CSC) coupling matrix
-function _pushforward_rows_A2B!(B::AbstractVector, ∂B::AbstractMatrix, 
-                                A2B::AbstractMatrix, 
-                                AA::AbstractVector, ∂AA::AbstractMatrix)
-   nX = size(∂AA, 1)
-   @assert size(A2B, 2) == length(AA) == size(∂AA, 2)
-   @assert length(B) == size(A2B, 1) && size(∂B) == (nX, size(A2B, 1))
-   mul!(B, A2B, AA)
-   @inbounds for k = 1:size(A2B, 1), j = 1:nX
-      d = zero(eltype(∂B))
-      for iAA = 1:size(A2B, 2)
-         d += A2B[k, iAA] * ∂AA[j, iAA]
-      end
-      ∂B[j, k] = d
-   end
-   return B, ∂B
 end
 
 
@@ -354,41 +306,61 @@ end
 #       dYlm[j, i, k] = ∂Ylm[i, j] / ∂X[i, j]
 #
 
+#   𝔹  : #i x length(tensor) 
+#   ∂𝔹 : #j x #i x length(tensor)
+#
+# This is the batched form of `pushforward_rows!`, which is its one-node 
+# case. Only a single (L = 0) output is supported. 
+
 function _jacobian_X(tensor::SparseACEbasis, 
                      Rnl, Ylm, 
                      dRnl, dYlm, 
                      ps, st)
-   backend = KernelAbstractions.get_backend(Rnl)
-   KernelAbstractions.synchronize(backend)
-
-   A, ∂A = _jacobian_X(tensor.abasis, (Rnl, Ylm), (dRnl, dYlm),
-                       st.aspec)
-   KernelAbstractions.synchronize(backend)
-
-   AA, ∂AA = _jacobian_X(tensor.aabasis, A, ∂A,
-                         st.aaspecs)
-
-   KernelAbstractions.synchronize(backend)
-   
-   # BB = tensor.A2Bmap * AA  if vector (single input)
-   #     or AA * A2Bmap'  if matrix (batch)
-   # BB = #nodes x #features 
-   # ∂BB = maxneigs x #nodes x #features
-   # for now assume only one basis ... 
    @assert length(st.A2Bmaps) == 1 "Jacobian currently only supports single basis"
-   A2Bmaps1 = st.A2Bmaps[1] 
-   𝔹 = permutedims( mul(A2Bmaps1, permutedims(AA) ) )
-
-   # convert 3-tensor to matrix, apply A2Bmaps, then back to 3-tensor
-   # this should be merged into a single kernel for efficiency 
-   ∂AA_mat = reshape(∂AA, :, size(∂AA, 3))
-   ∂𝔹_mat1 = permutedims( mul(A2Bmaps1, permutedims(∂AA_mat)) )
-
-   ∂𝔹 = reshape(∂𝔹_mat1, size(∂AA, 1), :, size(∂𝔹_mat1, 2))
-
+   A2B = st.A2Bmaps[1]
+   maxneigs, nnodes, _ = size(Rnl)
+   TA = promote_type(eltype(Rnl), eltype(Ylm))
+   TB = _promote_mul_type(eltype(A2B), TA)
+   T∂B = _promote_mul_type(TB, _rows_tangent_type(TA, (dRnl, dYlm)))
+   𝔹 = similar(Rnl, TB, (nnodes, size(A2B, 1)))
+   ∂𝔹 = similar(Rnl, T∂B, (maxneigs, nnodes, size(A2B, 1)))
+   _jacobian_X!(𝔹, ∂𝔹, tensor, Rnl, Ylm, dRnl, dYlm, 
+                st.aspec, st.aaspecs, A2B)
    return (𝔹,), (∂𝔹,)
 end
 
+function _jacobian_X!(𝔹::AbstractMatrix, ∂𝔹::AbstractArray{<: Any, 3}, 
+                      tensor::SparseACEbasis, 
+                      Rnl, Ylm, dRnl, dYlm, 
+                      aspec, aaspecs, A2B)
+   maxneigs, nnodes, _ = size(Rnl)
+   nA, nAA = length(aspec), length(tensor.aabasis)
+   TA = promote_type(eltype(Rnl), eltype(Ylm))
+   T∂A = _rows_tangent_type(TA, (dRnl, dYlm))
+   backend = KernelAbstractions.get_backend(Rnl)
+   # on the CPU the intermediates live on the Bumper stack; on a GPU 
+   # they are ordinary device arrays 
+   @no_escape begin 
+      A = _alloc_like(Rnl, TA, nnodes, nA)
+      ∂A = _alloc_like(Rnl, T∂A, maxneigs, nnodes, nA)
+      _jacobian_X!(A, ∂A, tensor.abasis, aspec, (Rnl, Ylm), (dRnl, dYlm))
+      KernelAbstractions.synchronize(backend)
+      AA = _alloc_like(Rnl, TA, nnodes, nAA)
+      ∂AA = _alloc_like(Rnl, T∂A, maxneigs, nnodes, nAA)
+      _jacobian_X!(AA, ∂AA, tensor.aabasis, A, ∂A, aaspecs)
+      KernelAbstractions.synchronize(backend)
+      # 𝔹 = AA * A2B' and, with (j, i) flattened into one row index, 
+      # ∂𝔹 = ∂AA * A2B' 
+      _mul_A2Bt!(𝔹, AA, A2B)
+      _mul_A2Bt!(reshape(∂𝔹, maxneigs * nnodes, :), 
+                 reshape(∂AA, maxneigs * nnodes, :), A2B)
+      KernelAbstractions.synchronize(backend)
+   end
+   return nothing 
+end
+
+_alloc_like(X::Array, T, dims...) = Bumper.alloc!(Bumper.default_buffer(), T, dims...)
+_alloc_like(X, T, dims...) = similar(X, T, dims)
 
 # --------------------------------------------------------
 

@@ -258,9 +258,11 @@ let
    # dense fallback of the coupling step 
    A, ∂A = ET.pushforward_rows(tensor.abasis, (Rnl, Ylm), (∂Rnl, ∂Ylm))
    AA, ∂AA = ET.pushforward_rows(tensor.aabasis, A, ∂A)
-   Bd = zeros(length(tensor)); ∂Bd = zeros(SVector{3, Float64}, nX, length(tensor))
-   ET._pushforward_rows_A2B!(Bd, ∂Bd, Matrix(tensor.A2Bmaps[1]), AA, ∂AA)
-   println_slim(@test Bd ≈ B && ∂Bd ≈ ∂B)
+   C = Matrix(tensor.A2Bmaps[1])
+   Bd = zeros(1, length(tensor)); ∂Bd = zeros(SVector{3, Float64}, nX, length(tensor))
+   ET._mul_A2Bt!(Bd, reshape(AA, 1, :), C)
+   ET._mul_A2Bt!(∂Bd, ∂AA, C)
+   println_slim(@test vec(Bd) ≈ B && ∂Bd ≈ ∂B)
    # Float32 inputs; the output promotes with the coupling coefficients 
    B32, ∂B32 = ET.pushforward_rows(tensor, Float32.(Rnl), Float32.(Ylm), 
                                    SVector{3, Float32}.(∂Rnl), SVector{3, Float32}.(∂Ylm))

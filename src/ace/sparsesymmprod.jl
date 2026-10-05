@@ -400,10 +400,10 @@ end
                specs ) where {TA, T∂A, ORD} 
 
    quote
-      fill!(AA, zero(TA))
-      fill!(∂AA, zero(T∂A))
+      # every entry except the constant one is overwritten below 
       if basis.hasconst
          fill!(view(AA, :, 1), one(TA))
+         fill!(view(∂AA, :, :, 1), zero(T∂A))
       end
       @nexprs $ORD N -> _jacobian_X_N!(
                               AA, ∂AA, 
