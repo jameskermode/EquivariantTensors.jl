@@ -184,6 +184,21 @@ _mul_A2Bt!(X::AbstractGPUArray{<: Any, 2}, Y::AbstractGPUArray{<: Any, 2},
       mul!(X, Y, SparseMatCSX(C.n, C.m, C.colptr, C.rowval, C.nzval_csc, 
                                         C.rowptr, C.colval, C.nzval_csr))
 
+# batched over nodes: X[:, i, :] = Y[:, i, :] * C' 
+function _mul_A2Bt!(X::AbstractArray{<: Any, 3}, Y::AbstractArray{<: Any, 3}, C)
+   @assert size(X, 2) == size(Y, 2)
+   for i = 1:size(X, 2)
+      _mul_A2Bt!(view(X, :, i, :), view(Y, :, i, :), C)
+   end
+   return X
+end
+
+# on a GPU, flatten (j, i) into one row index instead 
+function _mul_A2Bt!(X::AbstractGPUArray{<: Any, 3}, Y::AbstractGPUArray{<: Any, 3}, C)
+   _mul_A2Bt!(reshape(X, :, size(X, 3)), reshape(Y, :, size(Y, 3)), C)
+   return X
+end
+
 # a dense (or otherwise non-CSC) coupling matrix 
 _mul_A2Bt!(X::AbstractMatrix, Y::AbstractMatrix, C::AbstractMatrix) = 
       mul!(X, Y, transpose(C))

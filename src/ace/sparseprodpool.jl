@@ -417,8 +417,10 @@ end
 # Jacobian ∂A / ∂𝐫_j. This is the single-node, in-place counterpart of the 
 # batched `_jacobian_X`, but generic in NB and in the tangent type. 
 
-_rows_tangent_type(TA, ∂BB::Tuple) = 
-      mapreduce(∂B -> _promote_mul_type(TA, eltype(∂B)), promote_type, ∂BB)
+# TA as a static parameter: a closure capturing a type stores it as a 
+# DataType, which Julia 1.11 does not infer through 
+_rows_tangent_type(::Type{TA}, ∂BB::Tuple) where {TA} = 
+      promote_type(map(∂B -> _promote_mul_type(TA, eltype(∂B)), ∂BB)...)
 
 function whatalloc(::typeof(pushforward_rows!), 
                    basis::PooledSparseProduct{NB}, 

@@ -231,9 +231,10 @@ function pushforward_rows!(B::AbstractVector, ∂B::AbstractMatrix,
                            ∂Rnl::AbstractMatrix, ∂Ylm::AbstractMatrix)
    @assert length(tensor.A2Bmaps) == 1 "pushforward_rows! supports a single (L = 0) output"
    nX = size(Rnl, 1)
-   # one node of the batched _jacobian_X! 
-   _node3(X) = reshape(X, nX, 1, size(X, 2))
-   _jacobian_X!(reshape(B, 1, :), _node3(∂B), tensor, 
+   # one node of the batched _jacobian_X!; ReshapedArray rather than 
+   # reshape, which allocates a new Array header (on Julia 1.11) 
+   _node3(X) = Base.ReshapedArray(X, (nX, 1, size(X, 2)), ())
+   _jacobian_X!(Base.ReshapedArray(B, (1, length(B)), ()), _node3(∂B), tensor, 
                 _node3(Rnl), _node3(Ylm), _node3(∂Rnl), _node3(∂Ylm), 
                 tensor.abasis.spec, tensor.aabasis.specs, tensor.A2Bmaps[1])
    return B, ∂B
@@ -349,18 +350,20 @@ function _jacobian_X!(𝔹::AbstractMatrix, ∂𝔹::AbstractArray{<: Any, 3},
       ∂AA = _alloc_like(Rnl, T∂A, maxneigs, nnodes, nAA)
       _jacobian_X!(AA, ∂AA, tensor.aabasis, A, ∂A, aaspecs)
       KernelAbstractions.synchronize(backend)
-      # 𝔹 = AA * A2B' and, with (j, i) flattened into one row index, 
-      # ∂𝔹 = ∂AA * A2B' 
+      # 𝔹 = AA * A2B' and ∂𝔹[:, i, :] = ∂AA[:, i, :] * A2B' 
       _mul_A2Bt!(𝔹, AA, A2B)
-      _mul_A2Bt!(reshape(∂𝔹, maxneigs * nnodes, :), 
-                 reshape(∂AA, maxneigs * nnodes, :), A2B)
+      _mul_A2Bt!(∂𝔹, ∂AA, A2B)
       KernelAbstractions.synchronize(backend)
    end
    return nothing 
 end
 
-_alloc_like(X::Array, T, dims...) = Bumper.alloc!(Bumper.default_buffer(), T, dims...)
-_alloc_like(X, T, dims...) = similar(X, T, dims)
+# ::Type{T} so that the element type is inferred (Julia 1.11 does not 
+# specialise on a Type argument that is only passed through) 
+_alloc_like(X, ::Type{T}, dims...) where {T} = 
+      Bumper.alloc!(Bumper.default_buffer(), T, dims...)
+_alloc_like(X::AbstractGPUArray, ::Type{T}, dims...) where {T} = 
+      similar(X, T, dims)
 
 # --------------------------------------------------------
 
