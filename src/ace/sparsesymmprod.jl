@@ -342,12 +342,12 @@ function _pushforward_rows_AA!(AA::AbstractVector, ∂AA::AbstractMatrix,
    @assert length(iiAA) == length(spec)
    TAA = eltype(AA)
    @inbounds for (iAA, ϕ) in zip(iiAA, spec)
-      Avals = ntuple(t -> TAA(A[ϕ[t]]), N)
+      Avals = ntuple(t -> @inbounds(TAA(A[ϕ[t]])), N)
       # aa = ∏ₜ A[ϕ[t]],  ∇aa[t] = ∂aa / ∂A[ϕ[t]]
       aa, ∇aa = _static_prod_ed(Avals) 
       AA[iAA] = aa
       @simd ivdep for j = 1:nX
-         ∂Avals = ntuple(t -> ∂A[j, ϕ[t]], N)
+         ∂Avals = ntuple(t -> @inbounds(∂A[j, ϕ[t]]), N)
          ∂AA[j, iAA] = _static_dot(∇aa, ∂Avals)
       end
    end
@@ -357,7 +357,8 @@ end
 
 #
 # a kind of pushforward, but very specific, used to compute Jacobians.
-# see _jacobian_X(basis::PooledSparseProduct{2}, ...) for more details.
+# see _jacobian_X(basis::PooledSparseProduct, ...) for more details; 
+# this is the batched form of `pushforward_rows!`.
 #
 # It is plausible that each maxneigs dimension can be interpreted as one 
 # perturbation direction -> with that in mind this can be thought of as 
@@ -401,6 +402,9 @@ end
    quote
       fill!(AA, zero(TA))
       fill!(∂AA, zero(T∂A))
+      if basis.hasconst
+         fill!(view(AA, :, 1), one(TA))
+      end
       @nexprs $ORD N -> _jacobian_X_N!(
                               AA, ∂AA, 
                               basis.ranges[N], 
@@ -410,6 +414,9 @@ end
    end 
 end 
 
+# CPU: node i is the row-wise pushforward of (A[i, :], ∂A[:, i, :]), so this 
+# reuses the kernel of `pushforward_rows!`. The KA method is in 
+# sparsesymmprod_ka.jl. 
 function _jacobian_X_N!(
                AA::AbstractMatrix{TA}, 
                ∂AA::AbstractArray{T∂A, 3}, 
@@ -418,32 +425,13 @@ function _jacobian_X_N!(
                A::AbstractMatrix{TA}, 
                ∂A::AbstractArray{T∂A, 3}
                      ) where {TA, T∂A, N} 
-
-   nnodes, nA = size(A)
+   nnodes = size(A, 1)
    maxneigs = size(∂A, 1)
-   @assert length(iiAA) == length(spec)
-
-   @inbounds for (iAA, ϕ) in zip(iiAA, spec)
-      for i = 1:nnodes 
-         Avals = ntuple(t -> A[i, ϕ[t]], N)
-         # aa = ∏ₜ Aⁱₜ 
-         # ∇aa[t] = ∂aa / ∂A_{ϕ[t]}
-         aa, ∇aa = _static_prod_ed(Avals) 
-         AA[i, iAA] = aa
-
-         # ∂AA[j, i, iAA] = ∑ₜ ∇aa[t] * ∂A[j, i, ϕ[t]]
-         # for t = 1:N, j = 1:maxneigs
-         #    ∂AA[j, i, iAA] += ∇aa[t] * ∂A[j, i, ϕ[t]]
-         # end
-         for t = 1:N 
-            ∇aa_t = ∇aa[t]; ϕ_t = ϕ[t]
-            @simd ivdep for j = 1:maxneigs
-               ∂AA[j, i, iAA] += ∇aa_t * ∂A[j, i, ϕ_t]
-            end
-         end
-      end
+   for i = 1:nnodes 
+      _pushforward_rows_AA!(view(AA, i, :), view(∂AA, :, i, :), 
+                            iiAA, spec, 
+                            view(A, i, :), view(∂A, :, i, :), maxneigs)
    end
-
    return nothing                      
 end
 

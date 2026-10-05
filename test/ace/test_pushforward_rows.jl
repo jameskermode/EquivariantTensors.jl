@@ -9,6 +9,7 @@ using ACEbase.Testing: fdtest, println_slim, print_tf
 import EquivariantTensors as ET 
 import ForwardDiff
 import Polynomials4ML as P4ML 
+import Lux
 
 isdefined(Main, :__TEST_ACE__) || include("utils_ace.jl")
 
@@ -268,3 +269,64 @@ let
    println_slim(@test isapprox(B32, B; rtol = 1e-4))
    println_slim(@test isapprox(reinterpret(TB, ∂B32), reinterpret(Float64, ∂B); rtol = 1e-3))
 end
+
+##
+
+@info("Batched _jacobian_X agrees with pushforward_rows node by node")
+
+# _jacobian_X is the batched (maxneigs x nnodes x nfeat) form of 
+# pushforward_rows; on the CPU both run the same row-wise kernels. 
+
+_node(X::AbstractArray{<: Any, 3}, i) = X[:, i, :]
+
+for T in (Float64, Float32), TT in (:svec, :scalar), NB in 1:4 
+   local basis, NN = _generate_pooled_basis(T; order = NB)
+   local maxneigs, nnodes = rand(5:12), rand(2:4)
+   local BB = ntuple(t -> randn(T, maxneigs, nnodes, NN[t]), NB)
+   local ∂BB = ntuple(t -> _rand_tangent(T, Val(TT), maxneigs, nnodes, NN[t]), NB)
+   local A, ∂A = ET._jacobian_X(basis, BB, ∂BB)
+   print_tf(@test eltype(∂A) == eltype(∂BB[1]))
+   print_tf(@test size(A) == (nnodes, length(basis)) && 
+                  size(∂A) == (maxneigs, nnodes, length(basis)))
+   for i = 1:nnodes 
+      Ai, ∂Ai = ET.pushforward_rows(basis, ntuple(t -> _node(BB[t], i), NB), 
+                                           ntuple(t -> _node(∂BB[t], i), NB))
+      print_tf(@test A[i, :] ≈ Ai && _node(∂A, i) ≈ ∂Ai)
+   end
+end
+println()
+
+for T in (Float64, Float32), TT in (:svec, :scalar), ORD in 2:4, hasconst in (false, true)
+   local nA, nnodes, maxneigs = 12, rand(2:4), rand(5:12)
+   local basis = SparseSymmProd(_generate_aa_spec(nA, ORD; hasconst = hasconst))
+   local A = randn(T, nnodes, nA)
+   local ∂A = _rand_tangent(T, Val(TT), maxneigs, nnodes, nA)
+   local AA, ∂AA = ET._jacobian_X(basis, A, ∂A, basis.specs)
+   for i = 1:nnodes 
+      AAi, ∂AAi = ET.pushforward_rows(basis, A[i, :], _node(∂A, i))
+      print_tf(@test AA[i, :] ≈ AAi && _node(∂AA, i) ≈ ∂AAi)
+   end
+   # the constant term is 1 with zero derivative 
+   if hasconst 
+      print_tf(@test all(AA[:, 1] .== 1) && all(iszero, ∂AA[:, :, 1]))
+   end
+end
+println()
+
+# full tensor, batched over nodes, with SVector{3} tangents 
+let nnodes = 3, maxneigs = 7 
+   local 𝐫s = [ [ __rand_x() for _ = 1:maxneigs ] for _ = 1:nnodes ]
+   local emb = _embed_ed.(𝐫s)
+   _stack(k) = permutedims(cat([ e[k] for e in emb ]...; dims = 3), (1, 3, 2))
+   local Rnl, Ylm, ∂Rnl, ∂Ylm = _stack(1), _stack(2), _stack(3), _stack(4)
+   print_tf(@test size(Rnl) == (maxneigs, nnodes, length(rbasis)) && 
+                  eltype(∂Rnl) == SVector{3, Float64})
+   local st = Lux.initialstates(Random.default_rng(), tensor)
+   local (𝔹,), (∂𝔹,) = ET._jacobian_X(tensor, Rnl, Ylm, ∂Rnl, ∂Ylm, NamedTuple(), st)
+   print_tf(@test eltype(∂𝔹) == SVector{3, Float64})
+   for i = 1:nnodes 
+      Bi, ∂Bi = ET.pushforward_rows(tensor, emb[i]...)
+      print_tf(@test 𝔹[i, :] ≈ Bi && _node(∂𝔹, i) ≈ ∂Bi)
+   end
+end
+println()
