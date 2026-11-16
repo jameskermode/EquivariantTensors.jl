@@ -395,30 +395,32 @@ Returns `(C::Matrix{T}, MM::Vector{Vector{Int}})` with
 """
 function coupling_coeffs(::Val{L}, ll::Vector{Int}, nn::Vector{Int};
                          PI::Bool = true, basis::B = complex,
-                         nullspace_solver::Symbol = :sparse) where {L, B}
+                         nullspace_solver::Symbol = :sparse,
+                         refl_sym::Union{Symbol, Nothing} = nothing) where {L, B}
    nullspace_solver in (:sparse, :dense) ||
       throw(ArgumentError("coupling_coeffs: nullspace_solver must be :sparse or :dense"))
    N = length(ll)
    length(nn) == N || throw(ArgumentError("coupling_coeffs: ll and nn must have the same length"))
-   N == 1 && return _coupling_coeffs_static(Val(L), Val(1), ll, nn, PI, basis, nullspace_solver)
-   N == 2 && return _coupling_coeffs_static(Val(L), Val(2), ll, nn, PI, basis, nullspace_solver)
-   N == 3 && return _coupling_coeffs_static(Val(L), Val(3), ll, nn, PI, basis, nullspace_solver)
-   N == 4 && return _coupling_coeffs_static(Val(L), Val(4), ll, nn, PI, basis, nullspace_solver)
-   N == 5 && return _coupling_coeffs_static(Val(L), Val(5), ll, nn, PI, basis, nullspace_solver)
-   N == 6 && return _coupling_coeffs_static(Val(L), Val(6), ll, nn, PI, basis, nullspace_solver)
-   N == 7 && return _coupling_coeffs_static(Val(L), Val(7), ll, nn, PI, basis, nullspace_solver)
-   N == 8 && return _coupling_coeffs_static(Val(L), Val(8), ll, nn, PI, basis, nullspace_solver)
+   N == 1 && return _coupling_coeffs_static(Val(L), Val(1), ll, nn, PI, basis, nullspace_solver, refl_sym)
+   N == 2 && return _coupling_coeffs_static(Val(L), Val(2), ll, nn, PI, basis, nullspace_solver, refl_sym)
+   N == 3 && return _coupling_coeffs_static(Val(L), Val(3), ll, nn, PI, basis, nullspace_solver, refl_sym)
+   N == 4 && return _coupling_coeffs_static(Val(L), Val(4), ll, nn, PI, basis, nullspace_solver, refl_sym)
+   N == 5 && return _coupling_coeffs_static(Val(L), Val(5), ll, nn, PI, basis, nullspace_solver, refl_sym)
+   N == 6 && return _coupling_coeffs_static(Val(L), Val(6), ll, nn, PI, basis, nullspace_solver, refl_sym)
+   N == 7 && return _coupling_coeffs_static(Val(L), Val(7), ll, nn, PI, basis, nullspace_solver, refl_sym)
+   N == 8 && return _coupling_coeffs_static(Val(L), Val(8), ll, nn, PI, basis, nullspace_solver, refl_sym)
    throw(ArgumentError("coupling_coeffs(::Val{L}, ...): correlation order must be ≤ 8"))
 end
 
 const MAX_STATIC_ORDER = 8
 
 function _coupling_coeffs_static(::Val{L}, ::Val{N}, ll::Vector{Int}, nn::Vector{Int},
-                                 PI::Bool, basis::B, nullspace_solver::Symbol) where {L, N, B}
+                                 PI::Bool, basis::B, nullspace_solver::Symbol,
+                                 refl_sym::Union{Symbol, Nothing} = nothing) where {L, N, B}
    T = L == 0 ? Float64 : SVector{2L+1, Float64}
    C, MM = _coupling_coeffs(Val(L), SVector{N, Int}(ntuple(i -> ll[i], Val(N))),
                             SVector{N, Int}(ntuple(i -> nn[i], Val(N))); PI = PI, basis = basis,
-                            nullspace_solver = nullspace_solver)
+                            nullspace_solver = nullspace_solver, refl_sym = refl_sym)
    return Matrix{T}(C), Vector{Int}[Vector{Int}(mm) for mm in MM]
 end
 

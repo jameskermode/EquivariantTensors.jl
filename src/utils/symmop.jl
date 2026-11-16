@@ -31,18 +31,21 @@ end
 
 """
    symmetrisation_matrix(Val(L), mb_spec; prune = false, PI = true, basis = complex,
-                         nullspace_solver = :sparse)
+                         nullspace_solver = :sparse, refl_sym = nothing)
 
 Same result as `symmetrisation_matrix(L, mb_spec; prune, PI, basis)`, but
 type-stable for ahead-of-time compilation (`juliac --trim`): `L` is a
 compile-time constant and the correlation order is limited to
 `O3.MAX_STATIC_ORDER`.
+`refl_sym` (`:sym`, even ∑l; `:asym`, odd ∑l; `nothing`: `:sym` for even `L`,
+`:asym` for odd `L`) is forwarded to `O3.coupling_coeffs`.
 """
 function symmetrisation_matrix(::Val{L}, mb_spec; prune = false, PI::Bool = true,
-                               basis::B = complex, nullspace_solver::Symbol = :sparse) where {L, B}
+                               basis::B = complex, nullspace_solver::Symbol = :sparse,
+                               refl_sym::Union{Symbol, Nothing} = nothing) where {L, B}
    TVAL = L == 0 ? Float64 : SVector{2*L+1, Float64}
    ccfun = (ll, nn) -> O3.coupling_coeffs(Val(L), ll, nn; PI = PI, basis = basis,
-                                          nullspace_solver = nullspace_solver)
+                                          nullspace_solver = nullspace_solver, refl_sym = refl_sym)
    return _symmetrisation_matrix(TVAL, mb_spec, ccfun; prune = prune)
 end
 

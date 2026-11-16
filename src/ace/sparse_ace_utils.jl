@@ -109,7 +109,7 @@ end
 
 """
    sparse_equivariant_tensor_spec(Val(L); mb_spec, Rnl_spec, Ylm_spec, basis = real,
-                                  nullspace_solver = :sparse)
+                                  nullspace_solver = :sparse, refl_sym = nothing)
 
 The layer-free, type-stable half of `sparse_equivariant_tensor` (usable under
 `juliac --trim`): returns `(symm, 𝔸spec, Aspec, Aspec_raw, 𝔸spec_raw)`, where
@@ -117,9 +117,10 @@ The layer-free, type-stable half of `sparse_equivariant_tensor` (usable under
 `meta["𝔸spec"]` and `Aspec_raw` its `abasis.spec`.
 """
 function sparse_equivariant_tensor_spec(::Val{L}; mb_spec, Rnl_spec, Ylm_spec,
-                                        basis::B = real, nullspace_solver::Symbol = :sparse) where {L, B}
+                                        basis::B = real, nullspace_solver::Symbol = :sparse,
+                                        refl_sym::Union{Symbol, Nothing} = nothing) where {L, B}
    symm, 𝔸spec = symmetrisation_matrix(Val(L), mb_spec; prune = true, PI = true, basis = basis,
-                                       nullspace_solver = nullspace_solver)
+                                       nullspace_solver = nullspace_solver, refl_sym = refl_sym)
    return _tensor_specs(symm, 𝔸spec, Rnl_spec, Ylm_spec)
 end
 

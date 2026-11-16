@@ -27,3 +27,24 @@ include(joinpath(@__DIR__, "test_utils", "trim_cases.jl"))
    @test_throws ArgumentError ET.symmetrisation_matrix(Val(0), mb9; PI = true, basis = real)
    @test_throws ArgumentError ET.O3.coupling_coeffs(Val(0), [0, 0], [1]; PI = true, basis = real)
 end
+
+@testset "Val(L) API with refl_sym == Integer API" begin
+   maxn, maxl, ord = TRIM_L_CASE
+   mb = trim_mb_spec(maxn, maxl, ord; all_parities = true)
+   R = trim_rnl(maxn, maxl); Y = trim_ylm(maxl)
+   for L in 0:4, rs in TRIM_REFL
+      S1, A1 = ET.symmetrisation_matrix(L, mb; prune = true, PI = true, basis = real, refl_sym = rs)
+      S2, A2 = ET.symmetrisation_matrix(Val(L), mb; prune = true, PI = true, basis = real, refl_sym = rs)
+      @test S1 == S2
+      @test A1 == A2
+      @test size(S2, 1) > 0
+      t = ET.sparse_equivariant_tensor_spec(Val(L); mb_spec = mb, Rnl_spec = R, Ylm_spec = Y, basis = real,
+                                            refl_sym = rs)
+      @test t.symm == S2
+   end
+   # the default is unchanged: L even -> :sym, L odd -> :asym
+   @test ET.symmetrisation_matrix(Val(1), mb; PI = true, basis = real) ==
+         ET.symmetrisation_matrix(Val(1), mb; PI = true, basis = real, refl_sym = :asym)
+   @test ET.symmetrisation_matrix(Val(2), mb; PI = true, basis = real) ==
+         ET.symmetrisation_matrix(Val(2), mb; PI = true, basis = real, refl_sym = :sym)
+end
