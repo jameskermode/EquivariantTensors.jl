@@ -49,6 +49,19 @@ function symmetrisation_matrix(::Val{L}, mb_spec; prune = false, PI::Bool = true
    return _symmetrisation_matrix(TVAL, mb_spec, ccfun; prune = prune)
 end
 
+# Sum of the norms of the stored entries of each row (dim = 1) or column (dim = 2);
+# `sum(norm, symm; dims)` with a plain loop.  SparseArrays' reduction over `dims`
+# does not resolve under `juliac --trim` for SVector-valued matrices (L > 0) on
+# Julia 1.13.4 (`reduce_first` on an abstract `op`).
+function _entry_norm_sums(symm::SparseMatrixCSC, dim::Int)
+   out = zeros(Float64, size(symm, dim))
+   rows = rowvals(symm); vals = nonzeros(symm)
+   for j in 1:size(symm, 2), k in nzrange(symm, j)
+      out[dim == 1 ? rows[k] : j] += norm(vals[k])
+   end
+   return out
+end
+
 function _symmetrisation_matrix(::Type{TVAL}, mb_spec, ccfun::F; prune = false) where {TVAL, F}
 
    # for now assume a specific form of the mb_spec, namely 
@@ -109,14 +122,14 @@ function _symmetrisation_matrix(::Type{TVAL}, mb_spec, ccfun::F; prune = false) 
 
    # prune rows with all-zero entries (if there are any then print a warning 
    # because this indicates a bug in `coupling_coeffs`)
-   i_nz_rows = findall(!iszero, sum(norm, symm; dims = 2)[:])
+   i_nz_rows = findall(!iszero, _entry_norm_sums(symm, 1))
    if length(i_nz_rows) != num𝔹
       @warn("symmetrization matrix has all-zero rows; this indicates a bug in `coupling_coeffs`")
       symm = symm[i_nz_rows, :]
    end
 
    if prune 
-      i_nz_cols = sort( findall(!iszero, sum(norm, symm; dims = 1)[:]) ) 
+      i_nz_cols = sort( findall(!iszero, _entry_norm_sums(symm, 2)) ) 
       𝔸spec_pruned = 𝔸spec[i_nz_cols]
       symm_pruned = symm[:, i_nz_cols]
    else
